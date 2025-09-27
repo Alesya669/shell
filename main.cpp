@@ -2,11 +2,13 @@
 
 #include <string>
 using namespace std;
-int main() {
+int main()
+ {
+
 string input;
-while(true)
+while(getline(cin,input))
 {
-	if(!getline(cin,input))
+	if(input=="\\q")
 	{
 		break;
 	}
