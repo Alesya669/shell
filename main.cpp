@@ -1,18 +1,43 @@
 #include <iostream>
-
+#include <vector>
+#include <filesystem>
 #include <string>
 using namespace std;
-int main()
- {
+const char* home=getenv("HOME");
+string historyPath=string(home)+"/.kubsh_history";
+vector<string> history;
+    string history_file;
 
-string input;
-while(getline(cin,input))
+ bool running;
+void load_history() {
+
+        ifstream file(historyPath);
+        if (!file.is_open()) return;
+        string line;
+        while (getline(file, line) && history.size() < 100) {
+            if (!line.empty()) {
+                history.push_back(line);
+            }
+        }
+        file.close();
+    }
+void save_history() {
+        ofstream file(historyPath);
+        if (!file.is_open()) return;
+for (const auto& cmd : history) {
+           file << cmd << endl;
+       }
+       file.close();
+   }
+void add_to_history(const string& command) {
+       if (command.empty()) return;
+       if (history.size() >= 100) {
+           history.erase(history.begin());
+       }
+       history.push_back(command);
+
+   }}
+int main()
 {
-	if(input=="\\q")
-	{
-		break;
-	}
-cout<<input<<endl;
-}
-return 0;
+load_history();
 }
