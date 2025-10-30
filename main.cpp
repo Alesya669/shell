@@ -1,43 +1,34 @@
 #include <iostream>
-#include <vector>
-#include <filesystem>
 #include <string>
-using namespace std;
-const char* home=getenv("HOME");
-string historyPath=string(home)+"/.kubsh_history";
-vector<string> history;
-    string history_file;
 
- bool running;
-void load_history() {
-
-        ifstream file(historyPath);
-        if (!file.is_open()) return;
-        string line;
-        while (getline(file, line) && history.size() < 100) {
-            if (!line.empty()) {
-                history.push_back(line);
+int main() {
+    std::string input;
+    
+    while (true) {
+        std::cout << "$ ";
+        std::getline(std::cin, input);
+        
+        if (input.substr(0, 5) == "echo ") {
+            std::string text = input.substr(5); 
+            
+            
+            if (text.size() >= 2 && 
+                ((text[0] == '"' && text[text.size()-1] == '"') ||
+                 (text[0] == '\'' && text[text.size()-1] == '\''))) {
+                text = text.substr(1, text.size() - 2);
             }
+            
+            std::cout << text << std::endl;
         }
-        file.close();
+       
+        else if (input == "exit") {
+            break;
+        }
+        
+        else if (!input.empty()) {
+            std::cout << "Necomanda: " << input << std::endl;
+        }
     }
-void save_history() {
-        ofstream file(historyPath);
-        if (!file.is_open()) return;
-for (const auto& cmd : history) {
-           file << cmd << endl;
-       }
-       file.close();
-   }
-void add_to_history(const string& command) {
-       if (command.empty()) return;
-       if (history.size() >= 100) {
-           history.erase(history.begin());
-       }
-       history.push_back(command);
-
-   }}
-int main()
-{
-load_history();
+    
+    return 0;
 }
