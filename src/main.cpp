@@ -1,56 +1,51 @@
-#include <iostream>
+x#include <iostream>
+#include <string>
 #include <vector>
 #include <fstream>
-#include <string>
-#include <cstdlib> // for getenv
 
 using namespace std;
 
-const char* home = getenv("HOME");
-string historyPath = string(home) + "/.kubsh_history";
-vector<string> history;
-bool running = true;
-
-void load_history() {
-    ifstream file(historyPath);
-    if (!file.is_open()) return;
-    string line;
-    while (getline(file, line) && history.size() < 100) {
-        if (!line.empty()) {
-            history.push_back(line);
+int main() 
+{
+    vector<string> history;
+    string input;
+    bool running = true;
+    
+    while (running && getline(cin, input)) 
+    {
+        if (input.empty()) {
+            continue;
+        }
+        
+        if (input == "\\q") 
+        {
+            running = false;
+            break;
+        }
+        else if (input.find("debug ") == 0) 
+        {
+            string text = input.substr(6);
+            
+            if (text.size() >= 2) 
+            {
+                char first = text[0];
+                char last = text[text.size()-1];
+                if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) 
+                {
+                    text = text.substr(1, text.size()-2);
+                }
+            }
+            
+            cout << text << endl;
+            history.push_back(input);
+        }
+        else 
+        {
+            // Для ВСЕХ других команд выводим "command not found"
+            cout << input << ": command not found" << endl;
+            history.push_back(input);
         }
     }
-    file.close();
-}
-
-void save_history() {
-    ofstream file(historyPath);
-    if (!file.is_open()) return;
-    for (const auto& cmd : history) {
-        file << cmd << endl;
-    }
-    file.close();
-}
-
-void add_to_history(const string& command) {
-    if (command.empty()) return;
-    if (history.size() >= 100) {
-        history.erase(history.begin());
-    }
-    history.push_back(command);
-}
-
-int main() {
-    load_history();
-    
-    // Example usage
-    add_to_history("kubectl get pods");
-    add_to_history("kubectl apply -f deployment.yaml");
-    
-    save_history();
-    
-    cout << "History saved to: " << historyPath << endl;
-    cout << "Commands in history: " << history.size() << endl;
     
     return 0;
 }
