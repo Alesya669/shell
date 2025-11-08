@@ -41,7 +41,7 @@ int main()
         }
         else 
         {
-            // Для ВСЕХ других команд выводим "command not found"
+            
             cout << input << ": command not found" << endl;
             history.push_back(input);
         }
