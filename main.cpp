@@ -1,4 +1,4 @@
-x#include <iostream>
+#include <iostream>
 #include <string>
 #include <vector>
 #include <fstream>
@@ -10,13 +10,15 @@ int main()
     vector<string> history;
     string input;
     bool running = true;
-    
+    string history_file = "kubsh_history.txt";
+    ofstream write_file(history_file, ios::app);
     while (running && getline(cin, input)) 
     {
         if (input.empty()) {
             continue;
         }
-        
+        write_file << input << endl;
+        write_file.flush();
         if (input == "\\q") 
         {
             running = false;
@@ -45,7 +47,10 @@ int main()
             cout << input << ": command not found" << endl;
             history.push_back(input);
         }
+     write_file.close();
+
     }
     
     return 0;
 }
+   
