@@ -12,8 +12,8 @@ DEB_DIR = $(BUILD_DIR)/$(PACKAGE_NAME)_$(VERSION)_amd64
 # Основные цели
 all: $(TARGET)
 
-$(TARGET): main.cpp
-	$(CXX) $(CXXFLAGS) -o $(TARGET) main.cpp
+$(TARGET): src/main.cpp
+	$(CXX) $(CXXFLAGS) -o $(TARGET) src/main.cpp
 
 # Подготовка структуры для deb-пакета
 prepare-deb: $(TARGET)
