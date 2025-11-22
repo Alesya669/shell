@@ -41,6 +41,39 @@ int main()
             cout << text << endl;
             history.push_back(input);
         }
+else if (input.substr(0,4) == "\\e $") {
+
+
+
+            string var_name = input.substr(4);
+
+
+            const char* env_value = getenv(var_name.c_str());
+
+
+          
+            if (env_value != nullptr) {
+                string value(env_value);
+                if (value.find(':') != string::npos) {
+                    stringstream ss(value);
+                    string item;
+                    while (getline(ss, item, ':')) {
+
+                        cout << item << endl;
+
+                    }
+
+                } else {
+
+                    cout << value << endl;
+                }
+
+            } else {
+
+                cout << "Environment variable '" << var_name << "' not found" << endl;
+
+            }
+
         else 
         {
             
