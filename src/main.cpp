@@ -13,35 +13,48 @@
 #include <sys/types.h>
 #include <pwd.h>
 #include <grp.h>
+#include <cstring>
 
 using namespace std;
 
-// Global variable for signal handling
+// Глобальная переменная для обработки сигналов
 volatile sig_atomic_t running = true;
 
-void signal_handler(int signum) {
-    running = false;
+// Обработчик сигнала SIGHUP для перезагрузки конфигурации
+void handle_sighup(int signum) {
+    (void)signum; // Подавляем предупреждение о неиспользуемом параметре
+    cout << "Configuration reloaded" << endl;
 }
 
-// Check if a file exists
+// Основной обработчик сигналов
+void signal_handler(int signum) {
+    if (signum == SIGHUP) {
+        // Для SIGHUP не останавливаем программу
+        return;
+    } else {
+        running = false; // Останавливаем программу для других сигналов
+    }
+}
+
+// Проверка существования файла
 bool file_exists(const string& path) {
     struct stat buffer;
     return (stat(path.c_str(), &buffer) == 0);
 }
 
-// Check if a directory exists
+// Проверка существования директории
 bool dir_exists(const string& path) {
     struct stat buffer;
     if (stat(path.c_str(), &buffer) != 0) return false;
     return S_ISDIR(buffer.st_mode);
 }
 
-// Create directory recursively
+// Рекурсивное создание директории
 bool create_directory(const string& path) {
-    // Check if directory already exists
+    // Проверка, существует ли директория
     if (dir_exists(path)) return true;
     
-    // Create parent directories first
+    // Создание родительских директорий
     size_t pos = path.find_last_of('/');
     if (pos != string::npos) {
         string parent = path.substr(0, pos);
@@ -50,13 +63,13 @@ bool create_directory(const string& path) {
         }
     }
     
-    // Create the directory
+    // Создание директории
     return mkdir(path.c_str(), 0755) == 0;
 }
 
-// Check if a command exists in PATH
+// Поиск команды в PATH
 string find_command(const string& cmd) {
-    // Check if command contains a path
+    // Проверка, содержит ли команда путь
     if (cmd.find('/') != string::npos) {
         if (file_exists(cmd)) {
             return cmd;
@@ -64,7 +77,7 @@ string find_command(const string& cmd) {
         return "";
     }
     
-    // Search in PATH
+    // Поиск в переменной PATH
     const char* path_env = getenv("PATH");
     if (!path_env) return "";
     
@@ -81,12 +94,13 @@ string find_command(const string& cmd) {
     return "";
 }
 
-// Execute a command
+// Выполнение команды
 bool execute_command(const string& cmd) {
     vector<string> args;
     stringstream ss(cmd);
     string token;
     
+    // Разбиваем команду на аргументы
     while (getline(ss, token, ' ')) {
         if (!token.empty()) {
             args.push_back(token);
@@ -95,7 +109,7 @@ bool execute_command(const string& cmd) {
     
     if (args.empty()) return false;
     
-    // Check for built-in commands
+    // Проверка встроенных команд
     if (args[0] == "cat") {
         if (args.size() < 2) {
             cout << "cat: missing operand" << endl;
@@ -115,12 +129,12 @@ bool execute_command(const string& cmd) {
         }
     }
     
-    // Try to find and execute the command
+    // Поиск и выполнение команды
     string command_path = find_command(args[0]);
     if (command_path.empty()) {
-        // Check for VFS users directory
+        // Проверка на команду ls для VFS пользователей
         if (args[0] == "ls" && args.size() == 2 && args[1] == "/opt/users") {
-            // List VFS users
+            // Вывод списка пользователей VFS
             DIR* dir = opendir("/opt/users");
             if (dir) {
                 struct dirent* entry;
@@ -138,7 +152,7 @@ bool execute_command(const string& cmd) {
             return true;
         }
         
-        // Check for /etc/passwd reading
+        // Проверка на чтение /etc/passwd
         if (args[0] == "cat" && args.size() > 1 && args[1] == "/etc/passwd") {
             ifstream passwd_file("/etc/passwd");
             if (passwd_file) {
@@ -153,7 +167,7 @@ bool execute_command(const string& cmd) {
         return false;
     }
     
-    // Prepare arguments for execv
+    // Подготовка аргументов для execv
     vector<char*> exec_args;
     for (auto& arg : args) {
         exec_args.push_back(const_cast<char*>(arg.c_str()));
@@ -162,12 +176,12 @@ bool execute_command(const string& cmd) {
     
     pid_t pid = fork();
     if (pid == 0) {
-        // Child process
+        // Дочерний процесс
         execv(command_path.c_str(), exec_args.data());
         perror("execv failed");
         exit(1);
     } else if (pid > 0) {
-        // Parent process
+        // Родительский процесс
         waitpid(pid, nullptr, 0);
         return true;
     } else {
@@ -176,7 +190,7 @@ bool execute_command(const string& cmd) {
     }
 }
 
-// Create user in VFS
+// Создание пользователя в VFS
 void create_vfs_user(const string& username) {
     string user_dir = "/opt/users/" + username;
     create_directory(user_dir);
@@ -184,22 +198,24 @@ void create_vfs_user(const string& username) {
 
 int main() 
 {
-    // Setup signal handlers
-    struct sigaction sa;
-    sa.sa_handler = signal_handler;
-    sa.sa_flags = 0;
-    sigemptyset(&sa.sa_mask);
-    
-    sigaction(SIGHUP, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
-    
     vector<string> history;
     string input;
     string history_file = "kubsh_history.txt";
     ofstream write_file(history_file, ios::app);
     
-    // Create /opt/users directory if it doesn't exist
+    // НАСТРОЙКА ОБРАБОТЧИКОВ СИГНАЛОВ
+    // Используем простой signal() для SIGHUP
+    signal(SIGHUP, handle_sighup);  // Для SIGHUP используем handle_sighup
+    
+    // Для других сигналов используем отдельный обработчик
+    struct sigaction sa;
+    sa.sa_handler = signal_handler;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    
+    // Создание директории /opt/users если её нет
     if (!dir_exists("/opt/users")) {
         create_directory("/opt/users");
     }
@@ -213,13 +229,13 @@ int main()
         write_file << input << endl;
         write_file.flush();
         
-        // Check for exit command
+        // Проверка команды выхода
         if (input == "\\q") 
         {
             running = false;
             break;
         }
-        // Handle debug command
+        // Обработка команды debug
         else if (input.find("debug ") == 0) 
         {
             string text = input.substr(6);
@@ -237,7 +253,7 @@ int main()
             cout << text << endl;
             history.push_back(input);
         }
-        // Handle environment variable listing
+        // Обработка вывода переменных окружения
         else if (input.substr(0,4) == "\\e $") 
         {
             string var_name = input.substr(4);
@@ -258,12 +274,12 @@ int main()
                 cout << "Environment variable '" << var_name << "' not found" << endl;
             }
         }
-        // Handle commands starting with / (absolute path)
+        // Обработка команд с абсолютным путем
         else if (input[0] == '/')  
         {
             pid_t pid = fork();
             if (pid == 0) {
-                // Child process
+                // Дочерний процесс
                 vector<string> args;
                 stringstream ss(input);
                 string token;
@@ -287,7 +303,7 @@ int main()
             }
             history.push_back(input);
         }
-        // Handle all other commands
+        // Обработка всех остальных команд
         else 
         {
             if (!execute_command(input)) {
@@ -296,7 +312,7 @@ int main()
             history.push_back(input);
         }
         
-        // Check if stdin is still good (for signal handling)
+        // Проверка состояния stdin (для обработки сигналов)
         if (!cin.good()) {
             running = false;
         }
