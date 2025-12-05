@@ -16,7 +16,6 @@
 #include <cstring>
 
 using namespace std;
-
 // Глобальная переменная для обработки сигналов
 volatile sig_atomic_t running = true;
 
