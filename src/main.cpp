@@ -7,187 +7,116 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <signal.h>
+#include <algorithm>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <pwd.h>
+#include <grp.h>
 #include <cstring>
 
 using namespace std;
 
-// Флажок для работы шелла
-bool shell_works = true;
+// Глобальная переменная для обработки сигналов
+volatile sig_atomic_t running = true;
 
-// Обработчик сигнала SIGHUP
-void sighup_handler(int) {
+// Обработчик сигнала SIGHUP для перезагрузки конфигурации
+void handle_sighup(int signum) {
+    (void)signum; // Подавляем предупреждение о неиспользуемом параметре
     cout << "Configuration reloaded" << endl;
 }
 
-// Обработчик других сигналов
-void signal_handler(int) {
-    shell_works = false;
+// Основной обработчик сигналов
+void signal_handler(int signum) {
+    if (signum == SIGHUP) {
+        // Для SIGHUP не останавливаем программу
+        return;
+    } else {
+        running = false; // Останавливаем программу для других сигналов
+    }
 }
 
-// Есть ли файл?
-bool file_exists(string path) {
-    struct stat info;
-    return stat(path.c_str(), &info) == 0;
+// Проверка существования файла
+bool file_exists(const string& path) {
+    struct stat buffer;
+    return (stat(path.c_str(), &buffer) == 0);
 }
 
-// Есть ли папка?
-bool folder_exists(string path) {
-    struct stat info;
-    if (stat(path.c_str(), &info) != 0) return false;
-    return S_ISDIR(info.st_mode);
+// Проверка существования директории
+bool dir_exists(const string& path) {
+    struct stat buffer;
+    if (stat(path.c_str(), &buffer) != 0) return false;
+    return S_ISDIR(buffer.st_mode);
 }
 
-// Создать папку
-bool create_folder(string path) {
-    if (folder_exists(path)) return true;
+// Рекурсивное создание директории
+bool create_directory(const string& path) {
+    // Проверка, существует ли директория
+    if (dir_exists(path)) return true;
     
+    // Создание родительских директорий
     size_t pos = path.find_last_of('/');
     if (pos != string::npos) {
         string parent = path.substr(0, pos);
-        if (!parent.empty() && !create_folder(parent)) {
+        if (!parent.empty() && !create_directory(parent)) {
             return false;
         }
     }
     
+    // Создание директории
     return mkdir(path.c_str(), 0755) == 0;
 }
 
-// Найти команду в PATH
-string find_in_path(string cmd) {
-    // Если команда уже с путём
+// Поиск команды в PATH
+string find_command(const string& cmd) {
+    // Проверка, содержит ли команда путь
     if (cmd.find('/') != string::npos) {
-        if (file_exists(cmd)) return cmd;
+        if (file_exists(cmd)) {
+            return cmd;
+        }
         return "";
     }
     
-    // Ищем в PATH
+    // Поиск в переменной PATH
     const char* path_env = getenv("PATH");
     if (!path_env) return "";
     
     stringstream ss(path_env);
-    string path_part;
+    string path;
     
-    while (getline(ss, path_part, ':')) {
-        string full = path_part + "/" + cmd;
-        if (file_exists(full)) {
-            return full;
+    while (getline(ss, path, ':')) {
+        string full_path = path + "/" + cmd;
+        if (file_exists(full_path)) {
+            return full_path;
         }
     }
     
     return "";
 }
 
-// ========== VFS ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ==========
-
-// Где будет папка users
-string get_users_folder() {
-    const char* home = getenv("HOME");
-    if (!home) return "./users";
-    return string(home) + "/users";
-}
-
-// Создать папку для пользователя в VFS
-void make_user_folder(string username) {
-    string users_dir = get_users_folder();
-    string user_dir = users_dir + "/" + username;
-    
-    // Создаём папку
-    create_folder(user_dir);
-    
-    // Файл с ID
-    ofstream id_file(user_dir + "/id");
-    id_file << "1000" << endl; // Просто пример ID
-    id_file.close();
-    
-    // Файл с домашней папкой
-    ofstream home_file(user_dir + "/home");
-    home_file << "/home/" + username << endl;
-    home_file.close();
-    
-    // Файл с шеллом
-    ofstream shell_file(user_dir + "/shell");
-    shell_file << "/bin/bash" << endl;
-    shell_file.close();
-    
-    // Создаём в системе (без sudo для простоты)
-    string cmd = "useradd -m " + username + " 2>/dev/null || true";
-    system(cmd.c_str());
-}
-
-// Удалить папку пользователя
-void delete_user_folder(string username) {
-    string users_dir = get_users_folder();
-    string user_dir = users_dir + "/" + username;
-    
-    // Удаляем из системы
-    string cmd = "userdel -r " + username + " 2>/dev/null || true";
-    system(cmd.c_str());
-    
-    // Удаляем папку
-    cmd = "rm -rf \"" + user_dir + "\"";
-    system(cmd.c_str());
-}
-
-// Инициализация VFS
-void setup_vfs() {
-    string users_dir = get_users_folder();
-    
-    // Создаём главную папку
-    if (!folder_exists(users_dir)) {
-        cout << "Создаём папку users: " << users_dir << endl;
-        create_folder(users_dir);
-    }
-    
-    // Делаем ссылку /opt/users
-    if (!folder_exists("/opt/users")) {
-        string cmd = "ln -sf \"" + users_dir + "\" /opt/users";
-        system(cmd.c_str());
-    }
-    
-    // Пример: создаём тестового пользователя
-    make_user_folder("testuser");
-}
-
-// Выполнить команду
-bool run_command(string cmd) {
-    vector<string> parts;
+// Выполнение команды
+bool execute_command(const string& cmd) {
+    vector<string> args;
     stringstream ss(cmd);
-    string part;
+    string token;
     
-    // Делим команду на части
-    while (getline(ss, part, ' ')) {
-        if (!part.empty()) {
-            parts.push_back(part);
+    // Разбиваем команду на аргументы
+    while (getline(ss, token, ' ')) {
+        if (!token.empty()) {
+            args.push_back(token);
         }
     }
     
-    if (parts.empty()) return false;
+    if (args.empty()) return false;
     
-    // Команда echo
-    if (parts[0] == "echo") {
-        if (parts.size() > 1) {
-            string text;
-            for (size_t i = 1; i < parts.size(); i++) {
-                if (i > 1) text += " ";
-                text += parts[i];
-            }
-            cout << text << endl;
-        } else {
-            cout << endl;
-        }
-        return true;
-    }
-    
-    // Команда cat
-    if (parts[0] == "cat") {
-        if (parts.size() < 2) {
-            cout << "Нужно указать файл" << endl;
+    // Проверка встроенных команд
+    if (args[0] == "cat") {
+        if (args.size() < 2) {
+            cout << "cat: missing operand" << endl;
             return true;
         }
         
-        ifstream file(parts[1]);
+        ifstream file(args[1]);
         if (file) {
             string line;
             while (getline(file, line)) {
@@ -195,61 +124,76 @@ bool run_command(string cmd) {
             }
             return true;
         } else {
-            cout << "Файл не найден: " << parts[1] << endl;
+            cout << "cat: " << args[1] << ": No such file or directory" << endl;
             return true;
         }
     }
     
-    // Добавить пользователя
-    if (parts[0] == "adduser") {
-        if (parts.size() < 2) {
-            cout << "Укажи имя пользователя" << endl;
+    // Поиск и выполнение команды
+    string command_path = find_command(args[0]);
+    if (command_path.empty()) {
+        // Проверка на команду ls для VFS пользователей
+        if (args[0] == "ls" && args.size() == 2 && args[1] == "/opt/users") {
+            // Вывод списка пользователей VFS
+            DIR* dir = opendir("/opt/users");
+            if (dir) {
+                struct dirent* entry;
+                while ((entry = readdir(dir)) != nullptr) {
+                    if (entry->d_name[0] != '.') {
+                        struct stat st;
+                        string full_path = string("/opt/users/") + entry->d_name;
+                        if (stat(full_path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+                            cout << entry->d_name << endl;
+                        }
+                    }
+                }
+                closedir(dir);
+            }
             return true;
         }
-        make_user_folder(parts[1]);
-        cout << "Пользователь " << parts[1] << " создан" << endl;
-        return true;
-    }
-    
-    // Удалить пользователя
-    if (parts[0] == "userdel") {
-        if (parts.size() < 2) {
-            cout << "Укажи имя пользователя" << endl;
+        
+        // Проверка на чтение /etc/passwd
+        if (args[0] == "cat" && args.size() > 1 && args[1] == "/etc/passwd") {
+            ifstream passwd_file("/etc/passwd");
+            if (passwd_file) {
+                string line;
+                while (getline(passwd_file, line)) {
+                    cout << line << endl;
+                }
+            }
             return true;
         }
-        delete_user_folder(parts[1]);
-        cout << "Пользователь " << parts[1] << " удалён" << endl;
-        return true;
-    }
-    
-    // Ищем команду в системе
-    string cmd_path = find_in_path(parts[0]);
-    if (cmd_path.empty()) {
+        
         return false;
     }
     
-    // Подготавливаем аргументы
-    vector<char*> args;
-    for (auto& p : parts) {
-        args.push_back(const_cast<char*>(p.c_str()));
+    // Подготовка аргументов для execv
+    vector<char*> exec_args;
+    for (auto& arg : args) {
+        exec_args.push_back(const_cast<char*>(arg.c_str()));
     }
-    args.push_back(nullptr);
+    exec_args.push_back(nullptr);
     
-    // Запускаем
     pid_t pid = fork();
     if (pid == 0) {
-        // Это дочерний процесс
-        execv(cmd_path.c_str(), args.data());
-        cout << "Ошибка запуска" << endl;
+        // Дочерний процесс
+        execv(command_path.c_str(), exec_args.data());
+        perror("execv failed");
         exit(1);
     } else if (pid > 0) {
-        // Это родительский процесс
+        // Родительский процесс
         waitpid(pid, nullptr, 0);
         return true;
     } else {
-        cout << "Ошибка fork" << endl;
+        perror("fork failed");
         return false;
     }
+}
+
+// Создание пользователя в VFS
+void create_vfs_user(const string& username) {
+    string user_dir = "/opt/users/" + username;
+    create_directory(user_dir);
 }
 
 int main() 
@@ -257,99 +201,123 @@ int main()
     vector<string> history;
     string input;
     string history_file = "kubsh_history.txt";
+    ofstream write_file(history_file, ios::app);
     
-    // Настраиваем сигналы
-    signal(SIGHUP, sighup_handler);
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
+    // НАСТРОЙКА ОБРАБОТЧИКОВ СИГНАЛОВ
+    // Используем простой signal() для SIGHUP
+    signal(SIGHUP, handle_sighup);  // Для SIGHUP используем handle_sighup
     
-    // Настраиваем VFS
-    setup_vfs();
+    // Для других сигналов используем отдельный обработчик
+    struct sigaction sa;
+    sa.sa_handler = signal_handler;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
     
-   
+    // Создание директории /opt/users если её нет
+    if (!dir_exists("/opt/users")) {
+        create_directory("/opt/users");
+    }
     
-    while (shell_works && getline(cin, input)) 
+    while (running && getline(cin, input)) 
     {
         if (input.empty()) {
-            cout << "kubsh> ";
             continue;
         }
         
-        // Сохраняем в историю
-        ofstream hist_file(history_file, ios::app);
-        hist_file << input << endl;
-        hist_file.close();
+        write_file << input << endl;
+        write_file.flush();
         
-        // Выход
+        // Проверка команды выхода
         if (input == "\\q") 
         {
-            shell_works = false;
+            running = false;
             break;
         }
-        
-        // Показать переменную окружения
+        // Обработка команды debug
+        else if (input.find("debug ") == 0) 
+        {
+            string text = input.substr(6);
+            
+            if (text.size() >= 2) 
+            {
+                char first = text[0];
+                char last = text[text.size()-1];
+                if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) 
+                {
+                    text = text.substr(1, text.size()-2);
+                }
+            }
+            
+            cout << text << endl;
+            history.push_back(input);
+        }
+        // Обработка вывода переменных окружения
         else if (input.substr(0,4) == "\\e $") 
         {
             string var_name = input.substr(4);
-            const char* value = getenv(var_name.c_str());
+            const char* env_value = getenv(var_name.c_str());
             
-            if (value != nullptr) {
-                cout << value << endl;
+            if (env_value != nullptr) {
+                string value(env_value);
+                if (value.find(':') != string::npos) {
+                    stringstream ss(value);
+                    string item;
+                    while (getline(ss, item, ':')) {
+                        cout << item << endl;
+                    }
+                } else {
+                    cout << value << endl;
+                }
             } else {
-                cout << "Нет такой переменной" << endl;
+                cout << "Environment variable '" << var_name << "' not found" << endl;
             }
         }
-        
-        // Информация о диске
-        else if (input.find("\\l ") == 0) 
-        {
-            string disk = input.substr(3);
-            
-            if (!file_exists(disk)) {
-                cout << "Диск не найден" << endl;
-            } else {
-                string cmd = "fdisk -l " + disk + " 2>/dev/null";
-                system(cmd.c_str());
-            }
-        }
-        
-        // Команда с путём
+        // Обработка команд с абсолютным путем
         else if (input[0] == '/')  
         {
-            vector<string> parts;
-            stringstream ss(input);
-            string part;
-            
-            while (getline(ss, part, ' ')) {
-                parts.push_back(part);
-            }
-            
-            vector<char*> args;
-            for (auto& p : parts) {
-                args.push_back(const_cast<char*>(p.c_str()));
-            }
-            args.push_back(nullptr);
-            
             pid_t pid = fork();
             if (pid == 0) {
-                execv(args[0], args.data());
-                cout << "Не запустилось" << endl;
+                // Дочерний процесс
+                vector<string> args;
+                stringstream ss(input);
+                string token;
+                while (getline(ss, token, ' ')) {
+                    args.push_back(token);
+                }
+                
+                vector<char*> exec_args;
+                for (auto& arg : args) {
+                    exec_args.push_back(const_cast<char*>(arg.c_str()));
+                }
+                exec_args.push_back(nullptr);
+                
+                execv(exec_args[0], exec_args.data());
+                perror("execv failed");
                 exit(1);
             } else if (pid > 0) {
                 waitpid(pid, nullptr, 0);
+            } else {
+                perror("fork failed");
             }
+            history.push_back(input);
         }
-        
-        // Обычная команда
+        // Обработка всех остальных команд
         else 
         {
-            if (!run_command(input)) {
-                cout << "Команда не найдена: " << input << endl;
+            if (!execute_command(input)) {
+                cout << input << ": command not found" << endl;
             }
+            history.push_back(input);
         }
         
-        cout << "kubsh> ";
+        // Проверка состояния stdin (для обработки сигналов)
+        if (!cin.good()) {
+            running = false;
+        }
     }
     
+    write_file.close();
     return 0;
 }
