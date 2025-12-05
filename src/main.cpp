@@ -4,6 +4,8 @@
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
+#include <sys/wait.h>
+#include <unistd.h>
 
 using namespace std;
 
@@ -64,6 +66,22 @@ int main()
             } else {
                 cout << "Environment variable '" << var_name << "' not found" << endl;
             }
+        }
+        else if (input[0] == '/')  // Выполнение бинарника
+        {
+            pid_t pid = fork(); // Создаём дочерний процесс
+            if (pid == 0) {
+                // Дочерний процесс
+                execl(input.c_str(), input.c_str(), NULL); // Выполняем бинарник
+                perror("Ошибка выполнения"); // Если exec не удался
+                exit(1); // Завершаем процесс с ошибкой
+            } else if (pid > 0) {
+                // Родительский процесс
+                wait(NULL); // Ожидаем завершения дочернего процесса
+            } else {
+                perror("Ошибка fork");
+            }
+            history.push_back(input);
         }
         else 
         {
