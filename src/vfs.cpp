@@ -8,7 +8,7 @@
 #include <cerrno>//Константы для ошибок
 #include <ctime>//Время для getattr
 #include <string>
-#include "vfs.h"//Для передачи fuse_start в main
+#include "vfs.hpp"//Для передачи fuse_start в main
 #include <sys/wait.h>//waitpid
 #include <fuse3/fuse.h>
 #include <pthread.h>//Потоки
