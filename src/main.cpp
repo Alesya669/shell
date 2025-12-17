@@ -17,13 +17,13 @@
 #include <grp.h>
 #include <dirent.h>
 #include <cstring>
-#include "vfs.h"
+
 using namespace std;
 
 // Глобальные переменные для сигналов
 volatile sig_atomic_t sighup_received = 0;
 volatile sig_atomic_t running = true;
-VFS vfs("/opt/users");
+
 // Обновленный обработчик SIGHUP - выводит прямо в stdout
 void handle_sighup(int signum) {
     (void)signum;
@@ -44,7 +44,7 @@ void handle_signal(int signum) {
 string exec(const char* cmd) {
     array<char, 128> buffer;
     string result;
-   unique_ptr<FILE, int(*)(FILE*)> pipe(popen(cmd, "r"), pclose);
+    unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
     if (!pipe) {
         return "";
     }
@@ -370,14 +370,12 @@ int main()
     
     // Инициализируем VFS
     init_vfs();
-    if (!vfs.mount()) {
-    cerr << "Failed to mount VFS. Continuing without VFS support." << endl;
-}
+    
     // Основной цикл
     while (running) 
     {
         // Мониторим изменения в VFS
-        vfs.monitor_changes();
+        monitor_vfs_changes();
         
         // Выводим приглашение только если stdin - терминал
         if (isatty(STDIN_FILENO)) {
@@ -492,50 +490,59 @@ int main()
             }
         }
         else if (args[0] == "mkdir" && args.size() > 1) {
-    string dir_path = args[1];
-    
-    // Проверяем, не пытаемся ли создать директорию пользователя в VFS
-    if (dir_path.find("/opt/users/") == 0) {
-        string username = dir_path.substr(strlen("/opt/users/"));
-        if (!username.empty() && username.find('/') == string::npos) {
-            if (vfs.create_user_dir(username)) {
-                cout << "Created VFS directory for user: " << username << endl;
+            string dir_path = args[1];
+            
+            // Проверяем, не пытаемся ли создать директорию пользователя в VFS
+            if (dir_path.find("/opt/users/") == 0) {
+                string username = dir_path.substr(strlen("/opt/users/"));
+                if (!username.empty() && username.find('/') == string::npos) {
+                    create_user_vfs_info(username);
+                    cout << "Created VFS directory for user: " << username << endl;
+                } else {
+                    create_directory(dir_path);
+                }
             } else {
-                cout << "Failed to create user directory" << endl;
+                create_directory(dir_path);
             }
-        } else {
-            create_directory(dir_path);
         }
-    } else {
-        create_directory(dir_path);
-    }
-}
-else if (args[0] == "ls" && args.size() > 1 && args[1] == "/opt/users") {
-    vector<string> users = vfs.list_users();
-    for (const auto& user : users) {
-        cout << user << endl;
-    }
-}
-else if (args[0] == "rmdir" && args.size() > 1) {
-    string dir_path = args[1];
-    
-    // Проверяем, не пытаемся ли удалить директорию пользователя из VFS
-    if (dir_path.find("/opt/users/") == 0) {
-        string username = dir_path.substr(strlen("/opt/users/"));
-        if (!username.empty() && username.find('/') == string::npos) {
-            if (vfs.remove_user_dir(username)) {
-                cout << "Removed VFS directory and user: " << username << endl;
+        else if (args[0] == "ls" && args.size() > 1 && args[1] == "/opt/users") {
+            string vfs_dir = "/opt/users";
+            if (dir_exists(vfs_dir)) {
+                DIR* dir = opendir(vfs_dir.c_str());
+                if (dir) {
+                    struct dirent* entry;
+                    while ((entry = readdir(dir)) != nullptr) {
+                        if (entry->d_name[0] != '.') {
+                            string full_path = vfs_dir + "/" + entry->d_name;
+                            if (dir_exists(full_path)) {
+                                cout << entry->d_name << endl;
+                            }
+                        }
+                    }
+                    closedir(dir);
+                }
             } else {
-                cout << "Failed to remove user directory" << endl;
+                cout << "ls: cannot access '/opt/users': No such file or directory" << endl;
             }
-        } else {
-            rmdir(dir_path.c_str());
         }
-    } else {
-        rmdir(dir_path.c_str());
-    }
-}
-
+        else if (args[0] == "rmdir" && args.size() > 1) {
+            string dir_path = args[1];
+            
+            // Проверяем, не пытаемся ли удалить директорию пользователя из VFS
+            if (dir_path.find("/opt/users/") == 0) {
+                string username = dir_path.substr(strlen("/opt/users/"));
+                if (!username.empty() && username.find('/') == string::npos) {
+                    handle_user_deletion(username);
+                    string cmd = "rm -rf \"" + dir_path + "\"";
+                    system(cmd.c_str());
+                    cout << "Removed VFS directory and user: " << username << endl;
+                } else {
+                    rmdir(dir_path.c_str());
+                }
+            } else {
+                rmdir(dir_path.c_str());
+            }
+        }
         else {
             // Пытаемся выполнить как внешнюю команду
             if (!execute_external(args)) {
