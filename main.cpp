@@ -19,7 +19,7 @@
 #include <cstring>
 #include <cstdint>
 
-#include "vfs.h"
+#include "vfs.hpp"
 
 using namespace std;
 
