@@ -1,0 +1,4 @@
+
+
+void fuse_start();
+
