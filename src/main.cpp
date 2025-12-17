@@ -4,35 +4,54 @@
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
+#include <cstdio>
+#include <memory>
+#include <stdexcept>
+#include <array>
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <signal.h>
-#include <algorithm>
-#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <pwd.h>
 #include <grp.h>
+#include <dirent.h>
 #include <cstring>
-
+#include "vfs.h"
 using namespace std;
-// Глобальная переменная для обработки сигналов
-volatile sig_atomic_t running = true;
 
-// Обработчик сигнала SIGHUP для перезагрузки конфигурации
+// Глобальные переменные для сигналов
+volatile sig_atomic_t sighup_received = 0;
+volatile sig_atomic_t running = true;
+VFS vfs("/opt/users");
+// Обновленный обработчик SIGHUP - выводит прямо в stdout
 void handle_sighup(int signum) {
-    (void)signum; // Подавляем предупреждение о неиспользуемом параметре
-    cout << "Configuration reloaded" << endl;
+    (void)signum;
+    // Выводим напрямую в stdout для гарантии
+    const char* msg = "Configuration reloaded\n";
+    write(STDOUT_FILENO, msg, strlen(msg));
+    sighup_received = 1;
 }
 
-// Основной обработчик сигналов
-void signal_handler(int signum) {
-    if (signum == SIGHUP) {
-        // Для SIGHUP не останавливаем программу
-        return;
-    } else {
-        running = false; // Останавливаем программу для других сигналов
+// Обработчик других сигналов
+void handle_signal(int signum) {
+    if (signum == SIGINT || signum == SIGTERM) {
+        running = false;
     }
+}
+
+// Функция для выполнения команды
+string exec(const char* cmd) {
+    array<char, 128> buffer;
+    string result;
+   unique_ptr<FILE, int(*)(FILE*)> pipe(popen(cmd, "r"), pclose);
+    if (!pipe) {
+        return "";
+    }
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+        result += buffer.data();
+    }
+    return result;
 }
 
 // Проверка существования файла
@@ -48,27 +67,23 @@ bool dir_exists(const string& path) {
     return S_ISDIR(buffer.st_mode);
 }
 
-// Рекурсивное создание директории
+// Создание директории
 bool create_directory(const string& path) {
-    // Проверка, существует ли директория
     if (dir_exists(path)) return true;
     
-    // Создание родительских директорий
     size_t pos = path.find_last_of('/');
     if (pos != string::npos) {
         string parent = path.substr(0, pos);
-        if (!parent.empty() && !create_directory(parent)) {
-            return false;
+        if (!parent.empty()) {
+            create_directory(parent);
         }
     }
     
-    // Создание директории
     return mkdir(path.c_str(), 0755) == 0;
 }
 
 // Поиск команды в PATH
-string find_command(const string& cmd) {
-    // Проверка, содержит ли команда путь
+string find_in_path(const string& cmd) {
     if (cmd.find('/') != string::npos) {
         if (file_exists(cmd)) {
             return cmd;
@@ -76,7 +91,6 @@ string find_command(const string& cmd) {
         return "";
     }
     
-    // Поиск в переменной PATH
     const char* path_env = getenv("PATH");
     if (!path_env) return "";
     
@@ -84,6 +98,7 @@ string find_command(const string& cmd) {
     string path;
     
     while (getline(ss, path, ':')) {
+        if (path.empty()) continue;
         string full_path = path + "/" + cmd;
         if (file_exists(full_path)) {
             return full_path;
@@ -93,230 +108,447 @@ string find_command(const string& cmd) {
     return "";
 }
 
-// Выполнение команды
-bool execute_command(const string& cmd) {
-    vector<string> args;
-    stringstream ss(cmd);
-    string token;
-    
-    // Разбиваем команду на аргументы
-    while (getline(ss, token, ' ')) {
-        if (!token.empty()) {
-            args.push_back(token);
-        }
-    }
-    
+// Выполнение внешней команды
+bool execute_external(const vector<string>& args) {
     if (args.empty()) return false;
     
-    // Проверка встроенных команд
-    if (args[0] == "cat") {
-        if (args.size() < 2) {
-            cout << "cat: missing operand" << endl;
-            return true;
-        }
-        
-        ifstream file(args[1]);
-        if (file) {
-            string line;
-            while (getline(file, line)) {
-                cout << line << endl;
-            }
-            return true;
-        } else {
-            cout << "cat: " << args[1] << ": No such file or directory" << endl;
-            return true;
-        }
-    }
-    
-    // Поиск и выполнение команды
-    string command_path = find_command(args[0]);
-    if (command_path.empty()) {
-        // Проверка на команду ls для VFS пользователей
-        if (args[0] == "ls" && args.size() == 2 && args[1] == "/opt/users") {
-            // Вывод списка пользователей VFS
-            DIR* dir = opendir("/opt/users");
-            if (dir) {
-                struct dirent* entry;
-                while ((entry = readdir(dir)) != nullptr) {
-                    if (entry->d_name[0] != '.') {
-                        struct stat st;
-                        string full_path = string("/opt/users/") + entry->d_name;
-                        if (stat(full_path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-                            cout << entry->d_name << endl;
-                        }
-                    }
-                }
-                closedir(dir);
-            }
-            return true;
-        }
-        
-        // Проверка на чтение /etc/passwd
-        if (args[0] == "cat" && args.size() > 1 && args[1] == "/etc/passwd") {
-            ifstream passwd_file("/etc/passwd");
-            if (passwd_file) {
-                string line;
-                while (getline(passwd_file, line)) {
-                    cout << line << endl;
-                }
-            }
-            return true;
-        }
-        
-        return false;
-    }
-    
-    // Подготовка аргументов для execv
-    vector<char*> exec_args;
-    for (auto& arg : args) {
-        exec_args.push_back(const_cast<char*>(arg.c_str()));
-    }
-    exec_args.push_back(nullptr);
+    string cmd_path = find_in_path(args[0]);
+    if (cmd_path.empty()) return false;
     
     pid_t pid = fork();
     if (pid == 0) {
         // Дочерний процесс
-        execv(command_path.c_str(), exec_args.data());
-        perror("execv failed");
-        exit(1);
+        vector<char*> exec_args;
+        for (const auto& arg : args) {
+            exec_args.push_back(const_cast<char*>(arg.c_str()));
+        }
+        exec_args.push_back(nullptr);
+        
+        execv(cmd_path.c_str(), exec_args.data());
+        exit(127);
     } else if (pid > 0) {
-        // Родительский процесс
-        waitpid(pid, nullptr, 0);
+        int status;
+        waitpid(pid, &status, 0);
         return true;
+    }
+    
+    return false;
+}
+
+// VFS: Создание информации о пользователе
+void create_user_vfs_info(const string& username) {
+    string vfs_dir = "/opt/users";
+    string user_dir = vfs_dir + "/" + username;
+    
+    // Создаем директорию пользователя
+    if (!create_directory(user_dir)) {
+        cerr << "Failed to create directory for user: " << username << endl;
+        return;
+    }
+    
+    // Получаем информацию о пользователе
+    struct passwd* pw = getpwnam(username.c_str());
+    if (!pw) {
+        // Пользователь не существует в системе - создаем временные файлы
+        ofstream id_file(user_dir + "/id");
+        if (id_file) {
+            id_file << "1000" << endl;
+            id_file.close();
+        }
+        
+        ofstream home_file(user_dir + "/home");
+        if (home_file) {
+            home_file << "/home/" + username << endl;
+            home_file.close();
+        }
+        
+        ofstream shell_file(user_dir + "/shell");
+        if (shell_file) {
+            shell_file << "/bin/bash" << endl;
+            shell_file.close();
+        }
+        
+        // Пытаемся добавить пользователя в систему (с sudo)
+        string adduser_cmd = "sudo adduser --disabled-password --gecos '' " + username + " >/dev/null 2>&1";
+        system(adduser_cmd.c_str());
     } else {
-        perror("fork failed");
-        return false;
+        // Пользователь существует - создаем файлы с реальными данными
+        ofstream id_file(user_dir + "/id");
+        if (id_file) {
+            id_file << pw->pw_uid << endl;
+            id_file.close();
+        }
+        
+        ofstream home_file(user_dir + "/home");
+        if (home_file) {
+            home_file << pw->pw_dir << endl;
+            home_file.close();
+        }
+        
+        ofstream shell_file(user_dir + "/shell");
+        if (shell_file) {
+            shell_file << pw->pw_shell << endl;
+            shell_file.close();
+        }
     }
 }
 
-// Создание пользователя в VFS
-void create_vfs_user(const string& username) {
-    string user_dir = "/opt/users/" + username;
-    create_directory(user_dir);
+// VFS: Инициализация и синхронизация (ТОЛЬКО для пользователей с /bin/bash или /bin/sh)
+void init_vfs() {
+    string vfs_dir = "/opt/users";
+    
+    // Создаем основную директорию
+    if (!create_directory(vfs_dir)) {
+        cerr << "Failed to create VFS directory: " << vfs_dir << endl;
+        return;
+    }
+    
+    // Читаем /etc/passwd и создаем директории ТОЛЬКО для пользователей с /bin/bash или /bin/sh
+    ifstream passwd_file("/etc/passwd");
+    if (passwd_file) {
+        string line;
+        while (getline(passwd_file, line)) {
+            // Проверяем, заканчивается ли строка на 'sh' (как в тесте)
+            if (line.find(":sh\n") != string::npos || line.find("/bin/bash") != string::npos) {
+                vector<string> parts;
+                stringstream ss(line);
+                string part;
+                
+                while (getline(ss, part, ':')) {
+                    parts.push_back(part);
+                }
+                
+                if (parts.size() >= 7) {
+                    string username = parts[0];
+                    string shell = parts[6];
+                    
+                    // Создаем директорию только если shell заканчивается на sh
+                    if (shell == "/bin/bash" || shell == "/bin/sh") {
+                        string user_dir = vfs_dir + "/" + username;
+                        if (!dir_exists(user_dir)) {
+                            create_directory(user_dir);
+                            
+                            // Создаем файлы БЕЗ лишних переводов строк
+                            ofstream id_file(user_dir + "/id");
+                            if (id_file) {
+                                id_file << parts[2];  // UID - БЕЗ endl
+                                id_file.close();
+                            }
+                            
+                            ofstream home_file(user_dir + "/home");
+                            if (home_file) {
+                                home_file << parts[5];  // Home directory - БЕЗ endl
+                                home_file.close();
+                            }
+                            
+                            ofstream shell_file(user_dir + "/shell");
+                            if (shell_file) {
+                                shell_file << shell;  // Shell - БЕЗ endl
+                                shell_file.close();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        passwd_file.close();
+    }
+}
+
+// Функция для проверки и создания недостающих файлов в VFS
+void check_and_create_vfs_files(const string& username) {
+    string vfs_dir = "/opt/users";
+    string user_dir = vfs_dir + "/" + username;
+    
+    if (!dir_exists(user_dir)) {
+        return;
+    }
+    
+    // Проверяем наличие файлов
+    string id_file = user_dir + "/id";
+    string home_file = user_dir + "/home";
+    string shell_file = user_dir + "/shell";
+    
+    if (!file_exists(id_file) || !file_exists(home_file) || !file_exists(shell_file)) {
+        // Получаем информацию о пользователе
+        struct passwd* pw = getpwnam(username.c_str());
+        if (pw) {
+            // Создаем файлы БЕЗ лишних переводов строк
+            ofstream id_f(id_file);
+            if (id_f) {
+                id_f << pw->pw_uid;  // БЕЗ endl
+                id_f.close();
+            }
+            
+            ofstream home_f(home_file);
+            if (home_f) {
+                home_f << pw->pw_dir;  // БЕЗ endl
+                home_f.close();
+            }
+            
+            ofstream shell_f(shell_file);
+            if (shell_f) {
+                shell_f << pw->pw_shell;  // БЕЗ endl
+                shell_f.close();
+            }
+        } else {
+            // Пользователь не существует - создаем базовые файлы
+            ofstream id_f(id_file);
+            if (id_f) {
+                id_f << "1000";  // БЕЗ endl
+                id_f.close();
+            }
+            
+            ofstream home_f(home_file);
+            if (home_f) {
+                home_f << "/home/" + username;  // БЕЗ endl
+                home_f.close();
+            }
+            
+            ofstream shell_f(shell_file);
+            if (shell_f) {
+                shell_f << "/bin/bash";  // БЕЗ endl
+                shell_f.close();
+            }
+            
+            // Пытаемся добавить пользователя
+            string adduser_cmd = "sudo adduser --disabled-password --gecos '' " + username + " >/dev/null 2>&1";
+            system(adduser_cmd.c_str());
+        }
+    }
+}
+
+// VFS: Мониторинг изменений в директории
+void monitor_vfs_changes() {
+    string vfs_dir = "/opt/users";
+    
+    if (!dir_exists(vfs_dir)) {
+        return;
+    }
+    
+    // Проверяем новые директории
+    DIR* dir = opendir(vfs_dir.c_str());
+    if (!dir) return;
+    
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (entry->d_name[0] != '.') {
+            string username = entry->d_name;
+            string user_dir = vfs_dir + "/" + username;
+            
+            if (dir_exists(user_dir)) {
+                // Проверяем и создаем файлы если нужно
+                check_and_create_vfs_files(username);
+            }
+        }
+    }
+    
+    closedir(dir);
+}
+
+// Функция для удаления пользователя при удалении директории
+void handle_user_deletion(const string& username) {
+    // Удаляем пользователя из системы
+    string deluser_cmd = "sudo userdel -r " + username + " >/dev/null 2>&1";
+    system(deluser_cmd.c_str());
 }
 
 int main() 
 {
     vector<string> history;
     string input;
-    string history_file = "kubsh_history.txt";
+    
+    // Файл истории - в домашней директории
+    string home_dir = getenv("HOME");
+    string history_file = home_dir + "/.kubsh_history";
     ofstream write_file(history_file, ios::app);
     
-    // НАСТРОЙКА ОБРАБОТЧИКОВ СИГНАЛОВ
-    // Используем простой signal() для SIGHUP
-    signal(SIGHUP, handle_sighup);  // Для SIGHUP используем handle_sighup
+    // Устанавливаем обработчики сигналов
+    signal(SIGHUP, handle_sighup);
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
     
-    // Для других сигналов используем отдельный обработчик
-    struct sigaction sa;
-    sa.sa_handler = signal_handler;
-    sa.sa_flags = 0;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
-    
-    // Создание директории /opt/users если её нет
-    if (!dir_exists("/opt/users")) {
-        create_directory("/opt/users");
-    }
-    
-    while (running && getline(cin, input)) 
+    // Инициализируем VFS
+    init_vfs();
+    if (!vfs.mount()) {
+    cerr << "Failed to mount VFS. Continuing without VFS support." << endl;
+}
+    // Основной цикл
+    while (running) 
     {
+        // Мониторим изменения в VFS
+        vfs.monitor_changes();
+        
+        // Выводим приглашение только если stdin - терминал
+        if (isatty(STDIN_FILENO)) {
+            cout << "kubsh> ";
+        }
+        cout.flush();
+        
+        // Чтение ввода
+        if (!getline(cin, input)) {
+            if (cin.eof()) {
+                break;  // Ctrl+D
+            }
+            continue;
+        }
+        
         if (input.empty()) {
             continue;
         }
         
-        write_file << input << endl;
-        write_file.flush();
+        // Сохраняем в историю
+        if (write_file.is_open()) {
+            write_file << input << endl;
+            write_file.flush();
+        }
+        history.push_back(input);
         
-        // Проверка команды выхода
-        if (input == "\\q") 
-        {
+        // Разбиваем ввод на аргументы
+        vector<string> args;
+        stringstream ss(input);
+        string token;
+        while (ss >> token) {
+            args.push_back(token);
+        }
+        
+        if (args.empty()) {
+            continue;
+        }
+        
+        // Обработка команд
+        if (args[0] == "\\q") {
             running = false;
             break;
         }
-        // Обработка команды debug
-        else if (input.find("debug ") == 0) 
-        {
-            string text = input.substr(6);
-            
-            if (text.size() >= 2) 
-            {
-                char first = text[0];
-                char last = text[text.size()-1];
-                if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) 
-                {
-                    text = text.substr(1, text.size()-2);
+        else if (args[0] == "debug" || args[0] == "echo") {
+            if (args.size() == 1) {
+                cout << endl;
+            } else {
+                string result;
+                for (size_t i = 1; i < args.size(); ++i) {
+                    if (i > 1) result += " ";
+                    result += args[i];
                 }
+                
+                // Удаляем кавычки
+                if (result.size() >= 2) {
+                    char first = result[0];
+                    char last = result[result.size()-1];
+                    if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+                        result = result.substr(1, result.size()-2);
+                    }
+                }
+                
+                cout << result << endl;
             }
-            
-            cout << text << endl;
-            history.push_back(input);
         }
-        // Обработка вывода переменных окружения
-        else if (input.substr(0,4) == "\\e $") 
-        {
-            string var_name = input.substr(4);
-            const char* env_value = getenv(var_name.c_str());
-            
-            if (env_value != nullptr) {
-                string value(env_value);
-                if (value.find(':') != string::npos) {
-                    stringstream ss(value);
-                    string item;
-                    while (getline(ss, item, ':')) {
-                        cout << item << endl;
+        else if (args[0] == "\\e" && args.size() > 1) {
+            if (args[1][0] == '$') {
+                string var_name = args[1].substr(1);
+                const char* env_value = getenv(var_name.c_str());
+                
+                if (env_value != nullptr) {
+                    string value(env_value);
+                    if (value.find(':') != string::npos) {
+                        stringstream ss(value);
+                        string item;
+                        while (getline(ss, item, ':')) {
+                            cout << item << endl;
+                        }
+                    } else {
+                        cout << value << endl;
                     }
                 } else {
-                    cout << value << endl;
+                    cout << "Environment variable '" << var_name << "' not found" << endl;
                 }
-            } else {
-                cout << "Environment variable '" << var_name << "' not found" << endl;
             }
         }
-        // Обработка команд с абсолютным путем
-        else if (input[0] == '/')  
-        {
-            pid_t pid = fork();
-            if (pid == 0) {
-                // Дочерний процесс
-                vector<string> args;
-                stringstream ss(input);
-                string token;
-                while (getline(ss, token, ' ')) {
-                    args.push_back(token);
-                }
-                
-                vector<char*> exec_args;
-                for (auto& arg : args) {
-                    exec_args.push_back(const_cast<char*>(arg.c_str()));
-                }
-                exec_args.push_back(nullptr);
-                
-                execv(exec_args[0], exec_args.data());
-                perror("execv failed");
-                exit(1);
-            } else if (pid > 0) {
-                waitpid(pid, nullptr, 0);
+        else if (args[0] == "\\l" && args.size() > 1) {
+            string device = args[1];
+            
+            if (device.empty()) {
+                cout << "Usage: \\l <device>" << endl;
             } else {
-                perror("fork failed");
+                string command = "fdisk -l " + device + " 2>/dev/null || lsblk " + device + " 2>/dev/null || true";
+                string output = exec(command.c_str());
+                if (output.empty()) {
+                    cout << "Could not get partition information for " << device << endl;
+                } else {
+                    cout << output;
+                }
             }
-            history.push_back(input);
         }
-        // Обработка всех остальных команд
-        else 
-        {
-            if (!execute_command(input)) {
-                cout << input << ": command not found" << endl;
+        else if (args[0] == "cat" && args.size() > 1 && args[1] == "/etc/passwd") {
+            ifstream file("/etc/passwd");
+            if (file) {
+                string line;
+                while (getline(file, line)) {
+                    cout << line << endl;
+                }
+                file.close();
+            } else {
+                cout << "cat: /etc/passwd: No such file or directory" << endl;
             }
-            history.push_back(input);
+        }
+        else if (args[0] == "mkdir" && args.size() > 1) {
+    string dir_path = args[1];
+    
+    // Проверяем, не пытаемся ли создать директорию пользователя в VFS
+    if (dir_path.find("/opt/users/") == 0) {
+        string username = dir_path.substr(strlen("/opt/users/"));
+        if (!username.empty() && username.find('/') == string::npos) {
+            if (vfs.create_user_dir(username)) {
+                cout << "Created VFS directory for user: " << username << endl;
+            } else {
+                cout << "Failed to create user directory" << endl;
+            }
+        } else {
+            create_directory(dir_path);
+        }
+    } else {
+        create_directory(dir_path);
+    }
+}
+else if (args[0] == "ls" && args.size() > 1 && args[1] == "/opt/users") {
+    vector<string> users = vfs.list_users();
+    for (const auto& user : users) {
+        cout << user << endl;
+    }
+}
+else if (args[0] == "rmdir" && args.size() > 1) {
+    string dir_path = args[1];
+    
+    // Проверяем, не пытаемся ли удалить директорию пользователя из VFS
+    if (dir_path.find("/opt/users/") == 0) {
+        string username = dir_path.substr(strlen("/opt/users/"));
+        if (!username.empty() && username.find('/') == string::npos) {
+            if (vfs.remove_user_dir(username)) {
+                cout << "Removed VFS directory and user: " << username << endl;
+            } else {
+                cout << "Failed to remove user directory" << endl;
+            }
+        } else {
+            rmdir(dir_path.c_str());
+        }
+    } else {
+        rmdir(dir_path.c_str());
+    }
+}
+
+        else {
+            // Пытаемся выполнить как внешнюю команду
+            if (!execute_external(args)) {
+                cout << args[0] << ": command not found" << endl;
+            }
         }
         
-        // Проверка состояния stdin (для обработки сигналов)
-        if (!cin.good()) {
-            running = false;
-        }
+        cout.flush();
     }
     
-    write_file.close();
+    if (write_file.is_open()) {
+        write_file.close();
+    }
+    
     return 0;
 }
