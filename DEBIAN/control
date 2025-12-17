@@ -1,8 +1,0 @@
-Package: kubsh-shell
-Version: 1.0.0
-Section: utils
-Priority: optional
-Architecture: amd64
-Maintainer: Your Name <your.email@example.com>
-Description: Simple custom shell
- A simple custom shell implementation for learning purposes.
