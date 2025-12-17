@@ -11,7 +11,7 @@
 #include <sys/wait.h>
 #include <fuse3/fuse.h>
 #include <pthread.h>
-#include "vfs.h"
+#include "vfs.hpp"
 
 // ==================== Вспомогательные функции ====================
 
