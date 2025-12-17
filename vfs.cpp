@@ -15,7 +15,7 @@
 
 // ==================== Вспомогательные функции ====================
 
-static int run_cmd(const char* cmd, char* const argv[]) {
+int run_cmd(const char* cmd, char* const argv[]) {
     pid_t pid = fork();
     if (pid == 0) {
         execvp(cmd, argv);
@@ -28,7 +28,7 @@ static int run_cmd(const char* cmd, char* const argv[]) {
     return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static bool valid_shell(struct passwd* pwd) {
+bool valid_shell(struct passwd* pwd) {
     if (!pwd || !pwd->pw_shell) 
         return false;
     
@@ -38,7 +38,7 @@ static bool valid_shell(struct passwd* pwd) {
 
 // ==================== FUSE операции ====================
 
-static int users_getattr(const char* path, struct stat* st, struct fuse_file_info* fi) {
+int users_getattr(const char* path, struct stat* st, struct fuse_file_info* fi) {
     (void)fi;
     memset(st, 0, sizeof(struct stat));
     
@@ -86,9 +86,9 @@ static int users_getattr(const char* path, struct stat* st, struct fuse_file_inf
     return -ENOENT;
 }
 
-static int users_readdir(const char* path, void* buf, fuse_fill_dir_t filler, 
-                         off_t offset, struct fuse_file_info* fi, 
-                         enum fuse_readdir_flags flags) {
+int users_readdir(const char* path, void* buf, fuse_fill_dir_t filler, 
+                  off_t offset, struct fuse_file_info* fi, 
+                  enum fuse_readdir_flags flags) {
     (void)offset;
     (void)fi;
     (void)flags;
@@ -124,8 +124,8 @@ static int users_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
     return -ENOENT;
 }
 
-static int users_read(const char* path, char* buf, size_t size, off_t offset, 
-                      struct fuse_file_info* fi) {
+int users_read(const char* path, char* buf, size_t size, off_t offset, 
+               struct fuse_file_info* fi) {
     (void)fi;
     
     char username[256];
@@ -157,7 +157,7 @@ static int users_read(const char* path, char* buf, size_t size, off_t offset,
     return size;
 }
 
-static int users_mkdir(const char* path, mode_t mode) {
+int users_mkdir(const char* path, mode_t mode) {
     (void)mode;
     
     char username[256];
@@ -181,7 +181,7 @@ static int users_mkdir(const char* path, mode_t mode) {
     return (run_cmd("adduser", argv) == 0) ? 0 : -EIO;
 }
 
-static int users_rmdir(const char* path) {
+int users_rmdir(const char* path) {
     char username[256];
     if (sscanf(path, "/%255[^/]", username) != 1) {
         return -EINVAL;
@@ -208,7 +208,7 @@ static int users_rmdir(const char* path) {
 
 // ==================== Инициализация операций FUSE ====================
 
-static struct fuse_operations users_operations = {
+struct fuse_operations users_operations = {
     .getattr = users_getattr,
     .readdir = users_readdir,
     .read = users_read,
@@ -218,7 +218,7 @@ static struct fuse_operations users_operations = {
 
 // ==================== Поток для FUSE ====================
 
-static void* fuse_thread_function(void* arg) {
+void* fuse_thread_function(void* arg) {
     (void)arg;
     
     // Перенаправляем stderr в /dev/null
