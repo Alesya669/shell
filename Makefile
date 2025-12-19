@@ -44,7 +44,7 @@ prepare-deb: $(TARGET)
 	@echo "Priority: optional" >> $(DEB_DIR)/DEBIAN/control
 	@echo "Architecture: amd64" >> $(DEB_DIR)/DEBIAN/control
 	@echo "Maintainer: Your Name <your.email@example.com>" >> $(DEB_DIR)/DEBIAN/control
-	@echo "Depends: libfuse3-4, libreadline8" >> $(DEB_DIR)/DEBIAN/control
+	@echo "Depends: fuse3, libfuse3-4, libreadline8" >> $(DEB_DIR)/DEBIAN/control
 	@echo "Description: Simple custom shell" >> $(DEB_DIR)/DEBIAN/control
 	@echo " A simple custom shell implementation for learning purposes." >> $(DEB_DIR)/DEBIAN/control
 
